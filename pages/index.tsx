@@ -207,7 +207,7 @@ export default function Home() {
               <span className="lbl">Logic check</span>
             </div>
             <div className="hero-stat">
-              <span className="num">Under 60s</span>
+              <span className="num">Under few minutes</span>
               <span className="lbl">Full analysis</span>
             </div>
           </div>
@@ -277,7 +277,7 @@ export default function Home() {
             )}
             <div className="submit-note">
               Documents are processed securely and never stored.<br />
-              Analysis completes in 30 to 60 seconds.
+              Analysis completes within minutes.
             </div>
           </div>
 
