@@ -1,4 +1,3 @@
-cat > /home/claude/examcheck/styles/globals.css << 'ENDCSS'
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap');
 
 :root {
@@ -809,5 +808,3 @@ body {
   .marks-tags { margin-left: 0; width: 100%; }
   .submit-bar { flex-direction: column; align-items: flex-start; }
 }
-ENDCSS
-echo "done"
