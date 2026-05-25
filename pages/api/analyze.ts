@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk'
 export const config = {
   api: {
     bodyParser: false,
-    responseLimit: '50mb',
+    responseLimit: '8mb',
     sizeLimit: '50mb',
   },
 }
