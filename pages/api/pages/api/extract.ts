@@ -40,6 +40,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (error: unknown) {
     console.error('Extract error:', error)
     const msg = error instanceof Error ? error.message : 'Extraction failed'
-    return res.status(500).json({ error: msg })
+    const detail = error instanceof Error ? error.stack : String(error)
+    return res.status(500).json({ error: msg, detail })
   }
 }
