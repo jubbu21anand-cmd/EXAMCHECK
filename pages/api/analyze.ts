@@ -7,14 +7,15 @@ export const config = {
   api: {
     bodyParser: false,
     responseLimit: '8mb',
-    sizeLimit: '50mb',
+    sizeLimit: '8mb',
   },
 }
+
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 function parseForm(req: NextApiRequest): Promise<{ fields: formidable.Fields; files: formidable.Files }> {
   return new Promise((resolve, reject) => {
-    const form = formidable({ maxFileSize: 20 * 1024 * 1024, keepExtensions: true })
+    const form = formidable({ maxFileSize: 10 * 1024 * 1024, keepExtensions: true })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     form.parse(req, (err: any, fields: formidable.Fields, files: formidable.Files) => {
       if (err) reject(err)
@@ -42,6 +43,21 @@ function fileToBase64(f: formidable.File): string {
 function cleanupFile(f: formidable.File | null) {
   if (!f) return
   try { fs.unlinkSync(f.filepath) } catch { /* non-critical */ }
+}
+
+async function extractPdfText(pdfB64: string, role: string): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const response = await (client.messages.create as any)({
+    model: 'claude-opus-4-5',
+    max_tokens: 2000,
+    messages: [{
+      role: 'user',
+      content: `This is a base64-encoded PDF of a ${role}. Please read it carefully and transcribe ALL the text content exactly as written, including any handwriting, annotations, question numbers, marks, ticks, crosses, and examiner notes. Preserve the structure and numbering. data:application/pdf;base64,${pdfB64}`
+    }]
+  })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const text = response.content.find((c: any) => c.type === 'text')
+  return text ? text.text : ''
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -73,31 +89,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const paperB64 = fileToBase64(paperFile)
     const answerB64 = fileToBase64(answerFile)
 
-    const systemPrompt = `You are an expert academic examiner and re-evaluation specialist. You will be given three PDFs: the marking scheme, the question paper, and the student's handwritten answer sheet. Your job is to compare the student's answers against the marking scheme and identify every instance where marks may have been incorrectly awarded or wrongly deducted.
+    cleanupFile(schemeFile)
+    cleanupFile(paperFile)
+    cleanupFile(answerFile)
 
-You have exceptional ability to read messy handwriting, interpret diagrams and equations from scans, understand partial credit, recognise logically valid alternative approaches, and spot where examiners missed valid steps.
+    // Step 1: Extract text from each PDF separately
+    const [schemeText, paperText, answerText] = await Promise.all([
+      extractPdfText(schemeB64, 'marking scheme'),
+      extractPdfText(paperB64, 'question paper'),
+      extractPdfText(answerB64, 'student handwritten answer sheet — pay close attention to all handwriting, diagrams, working, and any examiner marks, ticks, crosses, or numbers written on the sheet'),
+    ])
+
+    // Step 2: Run the full analysis using extracted text only (no PDFs)
+    const systemPrompt = `You are an expert academic examiner and re-evaluation specialist. You will be given the text content of three documents: the marking scheme, the question paper, and the student's answer sheet. Your job is to compare the student's answers against the marking scheme and identify every instance where marks may have been incorrectly awarded or wrongly deducted.
 
 You always respond in valid JSON only, with no preamble, no markdown, no code fences, and no trailing text.`
 
-    const userPrompt = `I am providing three base64-encoded PDFs for re-evaluation analysis.
+    const userPrompt = `Perform a thorough re-evaluation analysis using the following extracted document content.
 
-MARKING SCHEME PDF (base64): data:application/pdf;base64,${schemeB64}
+MARKING SCHEME:
+${schemeText}
 
-QUESTION PAPER PDF (base64): data:application/pdf;base64,${paperB64}
+QUESTION PAPER:
+${paperText}
 
-STUDENT ANSWER SHEET PDF (base64): data:application/pdf;base64,${answerB64}
+STUDENT ANSWER SHEET:
+${answerText}
 
 ADDITIONAL CONTEXT:
 - Total marks available: ${totalMarks || 'Not specified'}
 - Marks awarded by examiner: ${marksAwarded || 'Not specified'}
 
 INSTRUCTIONS:
-1. Read all three documents carefully
-2. For each question, compare the student's answer against the marking scheme step by step
-3. Identify: missing marks (student did the work but was not given marks), excess deductions, valid alternative approaches, and correctly marked questions
-4. Check if examiner annotations on the answer sheet match what the marking scheme requires
-5. For beyond-the-answer-key checks: if the student used a different but logically valid method, flag as alternative valid approach
-6. Be fair and objective — only flag genuine discrepancies
+1. For each question, compare the student's answer against the marking scheme step by step
+2. Identify: missing marks (student did the work but was not given marks), excess deductions, valid alternative approaches, and correctly marked questions
+3. Check if examiner annotations on the answer sheet match what the marking scheme requires
+4. For beyond-the-answer-key checks: if the student used a different but logically valid method, flag as alternative valid approach
+5. Be fair and objective — only flag genuine discrepancies
 
 Respond ONLY with this exact JSON format (pure JSON, no markdown):
 {
@@ -151,10 +179,6 @@ Sort: critical first, then likely, then possible, then correct.`
     if (!analysisResult.findings || !Array.isArray(analysisResult.findings)) {
       throw new Error('Invalid analysis result. Please try again.')
     }
-
-    cleanupFile(schemeFile)
-    cleanupFile(paperFile)
-    cleanupFile(answerFile)
 
     return res.status(200).json(analysisResult)
 
