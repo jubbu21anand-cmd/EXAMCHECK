@@ -45,19 +45,23 @@ function cleanupFile(f: formidable.File | null) {
   try { fs.unlinkSync(f.filepath) } catch { /* non-critical */ }
 }
 
-async function extractPdfText(pdfB64: string, role: string): Promise<string> {
+async function extractText(pdfB64: string, role: string): Promise<string> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const response = await (client.messages.create as any)({
     model: 'claude-opus-4-5',
-    max_tokens: 2000,
+    max_tokens: 2500,
     messages: [{
       role: 'user',
-      content: `This is a base64-encoded PDF of a ${role}. Please read it carefully and transcribe ALL the text content exactly as written, including any handwriting, annotations, question numbers, marks, ticks, crosses, and examiner notes. Preserve the structure and numbering. data:application/pdf;base64,${pdfB64}`
+      content: `You are reading a ${role} that has been provided as a base64-encoded PDF. Transcribe ALL content exactly as it appears — including handwriting, question numbers, marks, ticks, crosses, examiner annotations, diagrams described in words, and any numbers written on the page. Preserve structure and numbering precisely. Do not summarise or skip anything.\n\ndata:application/pdf;base64,${pdfB64}`
     }]
   })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const text = response.content.find((c: any) => c.type === 'text')
   return text ? text.text : ''
+}
+
+async function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -85,72 +89,92 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!paperFile) return res.status(400).json({ error: 'Question paper PDF is required.' })
     if (!answerFile) return res.status(400).json({ error: 'Answer sheet PDF is required.' })
 
+    // Read all three files into memory first, then delete from disk immediately
     const schemeB64 = fileToBase64(schemeFile)
-    const paperB64 = fileToBase64(paperFile)
-    const answerB64 = fileToBase64(answerFile)
-
     cleanupFile(schemeFile)
+    schemeFile = null
+
+    const paperB64 = fileToBase64(paperFile)
     cleanupFile(paperFile)
+    paperFile = null
+
+    const answerB64 = fileToBase64(answerFile)
     cleanupFile(answerFile)
+    answerFile = null
 
-    // Step 1: Extract text from each PDF separately
-    const [schemeText, paperText, answerText] = await Promise.all([
-      extractPdfText(schemeB64, 'marking scheme'),
-      extractPdfText(paperB64, 'question paper'),
-      extractPdfText(answerB64, 'student handwritten answer sheet — pay close attention to all handwriting, diagrams, working, and any examiner marks, ticks, crosses, or numbers written on the sheet'),
-    ])
+    // Step 1 — Read marking scheme
+    const schemeText = await extractText(schemeB64, 'marking scheme for an exam')
+    await delay(500)
 
-    // Step 2: Run the full analysis using extracted text only (no PDFs)
-    const systemPrompt = `You are an expert academic examiner and re-evaluation specialist. You will be given the text content of three documents: the marking scheme, the question paper, and the student's answer sheet. Your job is to compare the student's answers against the marking scheme and identify every instance where marks may have been incorrectly awarded or wrongly deducted.
+    // Step 2 — Read question paper
+    const paperText = await extractText(paperB64, 'question paper for an exam')
+    await delay(500)
+
+    // Step 3 — Read answer sheet (most important — detailed instruction)
+    const answerText = await extractText(
+      answerB64,
+      'student handwritten answer sheet. Pay very close attention to: all handwriting even if messy, every step of working shown, diagrams and their labels, and any examiner marks written on the sheet such as ticks, crosses, circled numbers, totals, or deductions'
+    )
+    await delay(500)
+
+    // Step 4 — Full re-evaluation analysis using extracted text
+    const systemPrompt = `You are an expert academic examiner and re-evaluation specialist with decades of experience. You have been given the transcribed content of three exam documents. Your job is to compare the student's answers against the marking scheme question by question and identify every instance where marks may have been incorrectly awarded or wrongly deducted.
 
 You always respond in valid JSON only, with no preamble, no markdown, no code fences, and no trailing text.`
 
-    const userPrompt = `Perform a thorough re-evaluation analysis using the following extracted document content.
+    const userPrompt = `Perform a thorough and fair re-evaluation analysis using the transcribed content below.
 
 MARKING SCHEME:
 ${schemeText}
 
+---
+
 QUESTION PAPER:
 ${paperText}
 
-STUDENT ANSWER SHEET:
+---
+
+STUDENT ANSWER SHEET (including examiner marks):
 ${answerText}
 
-ADDITIONAL CONTEXT:
+---
+
+CONTEXT:
 - Total marks available: ${totalMarks || 'Not specified'}
 - Marks awarded by examiner: ${marksAwarded || 'Not specified'}
 
 INSTRUCTIONS:
-1. For each question, compare the student's answer against the marking scheme step by step
-2. Identify: missing marks (student did the work but was not given marks), excess deductions, valid alternative approaches, and correctly marked questions
-3. Check if examiner annotations on the answer sheet match what the marking scheme requires
-4. For beyond-the-answer-key checks: if the student used a different but logically valid method, flag as alternative valid approach
-5. Be fair and objective — only flag genuine discrepancies
+1. Go through every question one by one
+2. Compare what the student wrote against what the marking scheme awards marks for
+3. Check whether the examiner's marks on the sheet match what the scheme says
+4. Flag questions where marks were missed, wrongly deducted, or where the student used a valid alternative method not in the answer key
+5. Also note questions that were marked correctly so the student has the full picture
+6. Be fair — only flag genuine discrepancies, not borderline cases
 
-Respond ONLY with this exact JSON format (pure JSON, no markdown):
+Respond ONLY with this exact JSON (pure JSON, no markdown, no code fences):
 {
-  "totalQuestions": <number>,
-  "flaggedCount": <number>,
-  "potentialMarksDifference": <integer>,
-  "overallVerdict": "<one paragraph assessment>",
+  "totalQuestions": <number of questions analysed>,
+  "flaggedCount": <number with potential errors>,
+  "potentialMarksDifference": <total marks potentially owed, as integer, 0 if none>,
+  "overallVerdict": "<one paragraph honest assessment of marking quality>",
   "confidence": "<High, Medium, or Low>",
-  "summary": "<2-3 sentences on what the student should do next>",
+  "summary": "<2-3 sentences telling the student what to do next>",
   "findings": [
     {
-      "questionNumber": "<e.g. 1a, 2, 3b>",
+      "questionNumber": "<e.g. 1, 1a, 2b, 3>",
       "severity": "<critical, likely, possible, or correct>",
       "issueTitle": "<max 8 words>",
-      "issue": "<2-4 sentences>",
-      "reasoning": "<detailed reasoning>",
-      "recommendation": "<what to say in re-evaluation request>",
-      "marksAwarded": <number or null>,
-      "marksDeserved": <number or null>,
-      "beyondKeyValid": <true or false>
+      "issue": "<2-4 sentences explaining what appears wrong or correct>",
+      "reasoning": "<detailed explanation — what the scheme says, what the student wrote, and why there is or is not a discrepancy>",
+      "recommendation": "<exact wording the student can use when requesting re-evaluation for this question>",
+      "marksAwarded": <number awarded by examiner, or null>,
+      "marksDeserved": <number student should have received per scheme, or null>,
+      "beyondKeyValid": <true if student used valid alternative method, false otherwise>
     }
   ]
 }
 
-Sort: critical first, then likely, then possible, then correct.`
+Sort findings: critical first, then likely, then possible, then correct.`
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const response = await (client.messages.create as any)({
