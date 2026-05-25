@@ -26,92 +26,129 @@ interface AnalysisResult {
 const LOADING_MESSAGES = [
   'Reading your handwritten answer sheet...',
   'Parsing marking scheme structure...',
-  'Cross-referencing each answer against the scheme...',
+  'Cross-referencing answers against the scheme...',
   'Checking for skipped steps and partial credit...',
   'Evaluating logical validity beyond answer key...',
   'Flagging discrepancies by question number...',
   'Compiling your re-evaluation report...',
 ]
 
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: 'Definite Error',
+  likely: 'Likely Error',
+  possible: 'Possible Oversight',
+  correct: 'Correctly Marked',
+}
+
+interface UploadCardProps {
+  num: string
+  label: string
+  title: string
+  hint: string
+  file: File | null
+  onFile: (f: File) => void
+  onError: (msg: string) => void
+  extraContent?: React.ReactNode
+}
+
+function UploadCard({ num, label, title, hint, file, onFile, onError, extraContent }: UploadCardProps) {
+  const [drag, setDrag] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setDrag(false)
+    const f = e.dataTransfer.files[0]
+    if (f && f.type === 'application/pdf') { onFile(f) }
+    else { onError('Please upload a PDF file.') }
+  }
+
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    if (f && f.type === 'application/pdf') { onFile(f) }
+    else if (f) { onError('Only PDF files are accepted.') }
+  }
+
+  return (
+    <div className="upload-card">
+      <div className="card-label">{num} — {label}</div>
+      <div className="card-title">{title}</div>
+
+      <div
+        className={`upload-zone${drag ? ' drag-over' : ''}`}
+        onDragOver={e => { e.preventDefault(); setDrag(true) }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={handleDrop}
+      >
+        <input type="file" accept=".pdf" onChange={handleChange} ref={inputRef} />
+        <div className="upload-icon-wrap">
+          <svg className="upload-icon-svg" viewBox="0 0 24 24">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+        </div>
+        <span className="upload-main-text">Drop PDF here</span>
+        <span className="upload-sub-text">or click to browse</span>
+      </div>
+
+      {file && (
+        <div className="file-pill">
+          <span className="file-pill-name">{file.name}</span>
+          <span className="file-pill-size">{(file.size / 1024).toFixed(0)} KB</span>
+        </div>
+      )}
+
+      {extraContent}
+
+      <div className="card-hint">{hint}</div>
+    </div>
+  )
+}
+
 export default function Home() {
-  const [markingScheme, setMarkingScheme] = useState('')
-  const [questionPaper, setQuestionPaper] = useState('')
+  const [schemeFile, setSchemeFile] = useState<File | null>(null)
+  const [paperFile, setPaperFile] = useState<File | null>(null)
+  const [answerFile, setAnswerFile] = useState<File | null>(null)
   const [totalMarks, setTotalMarks] = useState('')
   const [marksAwarded, setMarksAwarded] = useState('')
-  const [answerFile, setAnswerFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadingMsg, setLoadingMsg] = useState('')
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState('')
-  const [dragOver, setDragOver] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
 
-  const startLoadingMessages = () => {
+  const handleSubmit = async () => {
+    if (!schemeFile) { setError('Please upload the marking scheme PDF.'); return }
+    if (!paperFile) { setError('Please upload the question paper PDF.'); return }
+    if (!answerFile) { setError('Please upload the answer sheet PDF.'); return }
+
+    setError('')
+    setResult(null)
+    setLoading(true)
+
     let i = 0
     setLoadingMsg(LOADING_MESSAGES[0])
     const interval = setInterval(() => {
       i = (i + 1) % LOADING_MESSAGES.length
       setLoadingMsg(LOADING_MESSAGES[i])
     }, 3000)
-    return interval
-  }
-
-  const handleFileDrop = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setDragOver(false)
-    const file = e.dataTransfer.files[0]
-    if (file && file.type === 'application/pdf') {
-      setAnswerFile(file)
-    } else {
-      setError('Please upload a PDF file.')
-    }
-  }
-
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file && file.type === 'application/pdf') {
-      setAnswerFile(file)
-      setError('')
-    } else if (file) {
-      setError('Please upload a PDF file only.')
-    }
-  }
-
-  const handleSubmit = async () => {
-    if (!markingScheme.trim()) { setError('Please enter the marking scheme.'); return }
-    if (!questionPaper.trim()) { setError('Please enter the question paper content.'); return }
-    if (!answerFile) { setError('Please upload the scanned answer sheet PDF.'); return }
-
-    setError('')
-    setResult(null)
-    setLoading(true)
-
-    const interval = startLoadingMessages()
 
     try {
       const formData = new FormData()
-      formData.append('markingScheme', markingScheme)
-      formData.append('questionPaper', questionPaper)
+      formData.append('schemeFile', schemeFile)
+      formData.append('paperFile', paperFile)
+      formData.append('answerSheet', answerFile)
       formData.append('totalMarks', totalMarks)
       formData.append('marksAwarded', marksAwarded)
-      formData.append('answerSheet', answerFile)
 
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        body: formData,
-      })
-
+      const response = await fetch('/api/analyze', { method: 'POST', body: formData })
       const data = await response.json()
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Analysis failed. Please try again.')
-      }
+      if (!response.ok) throw new Error(data.error || 'Analysis failed. Please try again.')
 
       setResult(data)
-      setTimeout(() => {
-        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 100)
+      setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
     } finally {
@@ -121,37 +158,29 @@ export default function Home() {
   }
 
   const handleReset = () => {
-    setMarkingScheme('')
-    setQuestionPaper('')
+    setSchemeFile(null)
+    setPaperFile(null)
+    setAnswerFile(null)
     setTotalMarks('')
     setMarksAwarded('')
-    setAnswerFile(null)
     setResult(null)
     setError('')
-    if (fileInputRef.current) fileInputRef.current.value = ''
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
-  const severityLabel: Record<string, string> = {
-    critical: 'Definite Error',
-    likely: 'Likely Error',
-    possible: 'Possible Oversight',
-    correct: 'Correctly Marked',
   }
 
   return (
     <>
       <Head>
         <title>ExamCheck — AI Re-Evaluation Tool</title>
-        <meta name="description" content="AI-powered exam re-evaluation. Upload your answer sheet and marking scheme to instantly spot marking errors." />
+        <meta name="description" content="AI-powered exam re-evaluation. Upload your PDFs and instantly spot marking errors." />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
       <header className="header">
         <div className="header-inner">
           <div className="header-logo">
+            <div className="logo-mark">EC</div>
             <h1>ExamCheck</h1>
-            <span className="tagline">Re-evaluation intelligence</span>
           </div>
           <span className="header-badge">Powered by Claude AI</span>
         </div>
@@ -159,28 +188,27 @@ export default function Home() {
 
       <section className="hero">
         <div className="hero-inner">
+          <div className="hero-label">AI Re-evaluation Tool</div>
           <h2>
-            Catch every marking error
-            <br />
-            in <span className="accent">minutes</span>, not days.
+            Catch marking errors<br />
+            in <span className="accent">seconds.</span>
           </h2>
           <p>
-            Upload your marking scheme, question paper, and scanned answer sheet.
-            The AI reads your handwriting, checks every step against the scheme,
-            and tells you exactly where marks may have been wrongly deducted.
+            Upload your marking scheme, question paper, and scanned answer sheet as PDFs.
+            The AI reads your handwriting and tells you exactly where marks were wrongly deducted.
           </p>
-          <div className="hero-meta">
+          <div className="hero-stats">
             <div className="hero-stat">
               <span className="num">Step-by-step</span>
-              <span className="label">Marks verification</span>
+              <span className="lbl">Marks check</span>
             </div>
             <div className="hero-stat">
               <span className="num">Beyond key</span>
-              <span className="label">Logic check included</span>
+              <span className="lbl">Logic check</span>
             </div>
             <div className="hero-stat">
               <span className="num">Under 60s</span>
-              <span className="label">Full paper analysis</span>
+              <span className="lbl">Full analysis</span>
             </div>
           </div>
         </div>
@@ -189,86 +217,67 @@ export default function Home() {
       <main className="main-area">
         <div className="container">
 
-          <div className="section-label">Step 1 of 3 — Input your documents</div>
-
-          <div className="step-grid">
-
-            <div className="step-card">
-              <div className="step-num">01</div>
-              <div className="step-title">Marking Scheme</div>
-              <label className="field-label">Paste the official marking scheme</label>
-              <textarea
-                rows={10}
-                placeholder={`Example:\nQ1(a) — State Newton's second law. [2 marks]\nAward 1 mark for: Force = mass x acceleration\nAward 1 mark for: correct units (N)`}
-                value={markingScheme}
-                onChange={e => setMarkingScheme(e.target.value)}
-              />
-            </div>
-
-            <div className="step-card">
-              <div className="step-num">02</div>
-              <div className="step-title">Question Paper</div>
-              <label className="field-label">Paste question text (for context)</label>
-              <textarea
-                rows={10}
-                placeholder={`Example:\nQ1(a) State Newton's second law of motion. [2]\nQ1(b) A car of mass 800 kg accelerates at 2 m/s². Calculate the resultant force. [3]`}
-                value={questionPaper}
-                onChange={e => setQuestionPaper(e.target.value)}
-              />
-              <div className="marks-row">
-                <div>
-                  <label className="field-label">Total marks possible</label>
-                  <input type="number" placeholder="e.g. 80" value={totalMarks} onChange={e => setTotalMarks(e.target.value)} min={0} />
-                </div>
-                <div>
-                  <label className="field-label">Marks awarded by examiner</label>
-                  <input type="number" placeholder="e.g. 61" value={marksAwarded} onChange={e => setMarksAwarded(e.target.value)} min={0} />
-                </div>
-              </div>
-            </div>
-
-            <div className="step-card">
-              <div className="step-num">03</div>
-              <div className="step-title">Scanned Answer Sheet</div>
-              <label className="field-label">Upload PDF (handwritten or typed)</label>
-              <div
-                className={`upload-zone${dragOver ? ' drag-over' : ''}`}
-                onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleFileDrop}
-              >
-                <input type="file" accept=".pdf" onChange={handleFileChange} ref={fileInputRef} />
-                <div className="upload-icon">+</div>
-                <div className="upload-text">
-                  <strong>Drag and drop your PDF here</strong>
-                  or click to browse
-                </div>
-              </div>
-
-              {answerFile && (
-                <div className="file-selected">
-                  <span>PDF</span>
-                  <span>{answerFile.name}</span>
-                  <span style={{ marginLeft: 'auto', opacity: 0.6 }}>{(answerFile.size / 1024).toFixed(0)} KB</span>
-                </div>
-              )}
-
-              <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(10,10,10,0.03)', borderLeft: '3px solid var(--border)' }}>
-                <p style={{ fontFamily: 'IBM Plex Mono', fontSize: '0.65rem', color: 'var(--muted)', lineHeight: 1.6 }}>
-                  The AI reads handwriting directly from your scan including messy writing, diagrams, and blurry pages. Higher resolution scans improve accuracy.
-                </p>
-              </div>
-            </div>
+          <div className="section-header">
+            <span className="section-num">01</span>
+            <span className="section-title">Upload your documents</span>
           </div>
 
-          <div className="submit-area">
+          <div className="upload-grid">
+            <UploadCard
+              num="01"
+              label="Required"
+              title="Marking Scheme"
+              hint="Upload the official marking scheme PDF. The more detailed it is, the better the analysis."
+              file={schemeFile}
+              onFile={f => { setSchemeFile(f); setError('') }}
+              onError={setError}
+            />
+
+            <UploadCard
+              num="02"
+              label="Required"
+              title="Question Paper"
+              hint="Upload the question paper PDF. This gives the AI context for what each question is asking."
+              file={paperFile}
+              onFile={f => { setPaperFile(f); setError('') }}
+              onError={setError}
+              extraContent={
+                <div className="marks-row">
+                  <div>
+                    <label className="input-label">Total marks</label>
+                    <input type="number" placeholder="e.g. 80" value={totalMarks} onChange={e => setTotalMarks(e.target.value)} min={0} />
+                  </div>
+                  <div>
+                    <label className="input-label">Marks awarded</label>
+                    <input type="number" placeholder="e.g. 61" value={marksAwarded} onChange={e => setMarksAwarded(e.target.value)} min={0} />
+                  </div>
+                </div>
+              }
+            />
+
+            <UploadCard
+              num="03"
+              label="Required"
+              title="Answer Sheet"
+              hint="Upload your scanned handwritten answer sheet as PDF. Works with blurry scans, messy writing, and diagrams."
+              file={answerFile}
+              onFile={f => { setAnswerFile(f); setError('') }}
+              onError={setError}
+            />
+          </div>
+
+          <div className="submit-bar">
             <button className="btn-primary" onClick={handleSubmit} disabled={loading}>
               {loading ? 'Analysing...' : 'Run Re-evaluation Analysis'}
             </button>
-            {result && <button className="btn-secondary" onClick={handleReset}>Start New Analysis</button>}
+            {result && (
+              <button className="btn-secondary" onClick={handleReset}>
+                New Analysis
+              </button>
+            )}
             <div className="submit-note">
-              Your documents are processed securely and never stored.<br />
-              Analysis typically completes in 30 to 60 seconds.
+              Documents are processed securely and never stored.<br />
+              Analysis completes in 30 to 60 seconds.
             </div>
           </div>
 
@@ -280,13 +289,11 @@ export default function Home() {
 
           {loading && (
             <div className="loading-overlay">
-              <div style={{ fontFamily: 'Playfair Display, serif', fontSize: '1.3rem', fontWeight: 700 }}>
-                Analysing your paper
+              <div className="loading-title">Analysing your paper</div>
+              <div className="loading-track">
+                <div className="loading-fill" />
               </div>
-              <div className="loading-bar-container">
-                <div className="loading-bar" />
-              </div>
-              <div className="loading-status">{loadingMsg}</div>
+              <div className="loading-msg">{loadingMsg}</div>
             </div>
           )}
 
@@ -294,70 +301,67 @@ export default function Home() {
             <div className="results-area" ref={resultsRef}>
               <div className="results-header">
                 <h3>Re-evaluation Report</h3>
-                <p>AI analysis complete — review each flagged question carefully</p>
+                <p>Analysis complete — review each flagged question below</p>
               </div>
 
-              <div className="verdict-strip">
-                <div className="verdict-cell">
+              <div className="verdict-grid">
+                <div className="verdict-card accent">
                   <div className="v-num">{result.totalQuestions}</div>
-                  <div className="v-label">Questions analysed</div>
+                  <div className="v-lbl">Questions analysed</div>
                 </div>
-                <div className="verdict-cell red">
+                <div className="verdict-card red">
                   <div className="v-num">{result.flaggedCount}</div>
-                  <div className="v-label">Questions flagged</div>
+                  <div className="v-lbl">Flagged questions</div>
                 </div>
-                <div className="verdict-cell amber">
+                <div className="verdict-card amber">
                   <div className="v-num">{result.potentialMarksDifference > 0 ? '+' : ''}{result.potentialMarksDifference}</div>
-                  <div className="v-label">Marks potentially owed</div>
+                  <div className="v-lbl">Marks potentially owed</div>
                 </div>
-                <div className="verdict-cell green">
+                <div className="verdict-card green">
                   <div className="v-num">{result.confidence}</div>
-                  <div className="v-label">Analysis confidence</div>
+                  <div className="v-lbl">Confidence level</div>
                 </div>
               </div>
 
-              <div className="findings-title">Individual Question Findings</div>
+              <div className="findings-label">Individual findings</div>
 
               {result.findings.map((f, i) => (
-                <div key={i} className={`finding-card reveal reveal-delay-${(i % 3) + 1}`}>
-                  <div className="finding-header">
-                    <div className={`finding-severity ${f.severity}`} />
-                    <div className="finding-meta">
-                      <span className="finding-qnum">Question {f.questionNumber}</span>
-                      <span className={`finding-badge ${f.severity}`}>{severityLabel[f.severity]}</span>
-                      {f.beyondKeyValid && <span className="finding-badge possible">Alternative valid approach</span>}
-                      <div className="finding-marks">
-                        {f.marksAwarded !== null && <span className="marks-chip awarded">Awarded: {f.marksAwarded}</span>}
-                        {f.marksDeserved !== null && <span className="marks-chip should">Should be: {f.marksDeserved}</span>}
-                      </div>
+                <div key={i} className="finding-card">
+                  <div className="finding-top">
+                    <div className={`severity-dot ${f.severity}`} />
+                    <span className="finding-qnum">Question {f.questionNumber}</span>
+                    <span className={`badge ${f.severity}`}>{SEVERITY_LABEL[f.severity]}</span>
+                    {f.beyondKeyValid && <span className="badge alt">Alt. valid approach</span>}
+                    <div className="marks-tags">
+                      {f.marksAwarded !== null && <span className="mark-tag awarded">Awarded: {f.marksAwarded}</span>}
+                      {f.marksDeserved !== null && <span className="mark-tag deserved">Should be: {f.marksDeserved}</span>}
                     </div>
                   </div>
                   <div className="finding-body">
                     <p className="finding-issue">{f.issue}</p>
-                    <div className="finding-reasoning">
-                      <strong>AI Reasoning</strong>
-                      {f.reasoning}
+                    <div className="reasoning-block">
+                      <span className="reasoning-label">AI Reasoning</span>
+                      <span className="reasoning-text">{f.reasoning}</span>
                     </div>
                     {f.recommendation && (
-                      <div className="finding-recommendation">
-                        <strong>What to do</strong>
-                        {f.recommendation}
+                      <div className="recommendation-block">
+                        <span className="recommendation-label">What to do</span>
+                        <span className="recommendation-text">{f.recommendation}</span>
                       </div>
                     )}
                   </div>
                 </div>
               ))}
 
-              <div className="summary-box">
+              <div className="summary-card">
                 <h4>Overall Verdict</h4>
-                <p>{result.overallVerdict}</p>
-                <div className="summary-verdict">{result.summary}</div>
+                <p className="verdict-text">{result.overallVerdict}</p>
+                <div className="next-steps">{result.summary}</div>
               </div>
 
-              <div style={{ marginTop: '20px', padding: '16px', background: 'rgba(10,10,10,0.04)', borderLeft: '3px solid var(--border)' }}>
-                <p style={{ fontFamily: 'IBM Plex Mono', fontSize: '0.65rem', color: 'var(--muted)', lineHeight: 1.6 }}>
-                  This report is an AI-assisted analysis to help identify potential errors for re-evaluation requests. It does not constitute a formal academic determination. Cross-check flagged questions with your teacher before filing a formal challenge.
-                </p>
+              <div className="disclaimer">
+                This is an AI-assisted analysis to help identify potential errors. It does not constitute a formal academic determination.
+                Always cross-check flagged questions with your teacher before filing a formal re-evaluation request.
               </div>
 
               <div style={{ marginTop: '24px' }}>
@@ -372,7 +376,7 @@ export default function Home() {
       <footer className="footer">
         <div className="footer-inner">
           <p>ExamCheck — AI Re-evaluation Assistant</p>
-          <p>Built for students. Powered by Claude AI.</p>
+          <p>Powered by Claude AI</p>
         </div>
       </footer>
     </>
