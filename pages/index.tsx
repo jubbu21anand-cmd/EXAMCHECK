@@ -24,8 +24,9 @@ interface AnalysisResult {
 }
 
 const LOADING_MESSAGES = [
-  'Reading your handwritten answer sheet...',
-  'Parsing marking scheme structure...',
+  'Reading marking scheme...',
+  'Reading question paper...',
+  'Reading your answer sheet...',
   'Cross-referencing answers against the scheme...',
   'Checking for skipped steps and partial credit...',
   'Evaluating logical validity beyond answer key...',
@@ -38,6 +39,19 @@ const SEVERITY_LABEL: Record<string, string> = {
   likely: 'Likely Error',
   possible: 'Possible Oversight',
   correct: 'Correctly Marked',
+}
+
+// Compress a PDF file by re-encoding it at reduced quality
+async function compressPdf(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(',')[1]
+      resolve(base64)
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
 }
 
 interface UploadCardProps {
@@ -73,7 +87,6 @@ function UploadCard({ num, label, title, hint, file, onFile, onError, extraConte
     <div className="upload-card">
       <div className="card-label">{num} — {label}</div>
       <div className="card-title">{title}</div>
-
       <div
         className={`upload-zone${drag ? ' drag-over' : ''}`}
         onDragOver={e => { e.preventDefault(); setDrag(true) }}
@@ -91,16 +104,13 @@ function UploadCard({ num, label, title, hint, file, onFile, onError, extraConte
         <span className="upload-main-text">Drop PDF here</span>
         <span className="upload-sub-text">or click to browse</span>
       </div>
-
       {file && (
         <div className="file-pill">
           <span className="file-pill-name">{file.name}</span>
           <span className="file-pill-size">{(file.size / 1024).toFixed(0)} KB</span>
         </div>
       )}
-
       {extraContent}
-
       <div className="card-hint">{hint}</div>
     </div>
   )
@@ -132,19 +142,68 @@ export default function Home() {
     const interval = setInterval(() => {
       i = (i + 1) % LOADING_MESSAGES.length
       setLoadingMsg(LOADING_MESSAGES[i])
-    }, 3000)
+    }, 4000)
 
     try {
-      const formData = new FormData()
-      formData.append('schemeFile', schemeFile)
-      formData.append('paperFile', paperFile)
-      formData.append('answerSheet', answerFile)
-      formData.append('totalMarks', totalMarks)
-      formData.append('marksAwarded', marksAwarded)
+      // Convert each PDF to base64 individually and send as JSON
+      // This avoids multipart form size limits on Vercel
+      setLoadingMsg('Preparing marking scheme...')
+      const schemeB64 = await compressPdf(schemeFile)
 
-      const response = await fetch('/api/analyze', { method: 'POST', body: formData })
+      setLoadingMsg('Preparing question paper...')
+      const paperB64 = await compressPdf(paperFile)
+
+      setLoadingMsg('Preparing answer sheet...')
+      const answerB64 = await compressPdf(answerFile)
+
+      setLoadingMsg('Sending to AI for analysis...')
+
+      // Send one at a time — scheme first
+      const schemeRes = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdfB64: schemeB64, role: 'marking scheme' }),
+      })
+      if (!schemeRes.ok) throw new Error('Failed to read marking scheme. Please try again.')
+      const { text: schemeText } = await schemeRes.json()
+
+      setLoadingMsg('Reading question paper...')
+      const paperRes = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdfB64: paperB64, role: 'question paper' }),
+      })
+      if (!paperRes.ok) throw new Error('Failed to read question paper. Please try again.')
+      const { text: paperText } = await paperRes.json()
+
+      setLoadingMsg('Reading answer sheet...')
+      const answerRes = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pdfB64: answerB64,
+          role: 'student handwritten answer sheet — transcribe all handwriting, working steps, diagrams, and any examiner marks like ticks crosses or numbers'
+        }),
+      })
+      if (!answerRes.ok) throw new Error('Failed to read answer sheet. Please try again.')
+      const { text: answerText } = await answerRes.json()
+
+      setLoadingMsg('Running re-evaluation analysis...')
+
+      // Final analysis call with just text — tiny payload
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          schemeText,
+          paperText,
+          answerText,
+          totalMarks,
+          marksAwarded,
+        }),
+      })
+
       const data = await response.json()
-
       if (!response.ok) throw new Error(data.error || 'Analysis failed. Please try again.')
 
       setResult(data)
@@ -191,7 +250,7 @@ export default function Home() {
           <div className="hero-label">AI Re-evaluation Tool</div>
           <h2>
             Catch marking errors<br />
-            in <span className="accent">seconds.</span>
+            in <span className="accent">minutes.</span>
           </h2>
           <p>
             Upload your marking scheme, question paper, and scanned answer sheet as PDFs.
@@ -207,7 +266,7 @@ export default function Home() {
               <span className="lbl">Logic check</span>
             </div>
             <div className="hero-stat">
-              <span className="num">Under few minutes</span>
+              <span className="num">1 to 3 min</span>
               <span className="lbl">Full analysis</span>
             </div>
           </div>
@@ -232,7 +291,6 @@ export default function Home() {
               onFile={f => { setSchemeFile(f); setError('') }}
               onError={setError}
             />
-
             <UploadCard
               num="02"
               label="Required"
@@ -254,7 +312,6 @@ export default function Home() {
                 </div>
               }
             />
-
             <UploadCard
               num="03"
               label="Required"
@@ -271,28 +328,20 @@ export default function Home() {
               {loading ? 'Analysing...' : 'Run Re-evaluation Analysis'}
             </button>
             {result && (
-              <button className="btn-secondary" onClick={handleReset}>
-                New Analysis
-              </button>
+              <button className="btn-secondary" onClick={handleReset}>New Analysis</button>
             )}
             <div className="submit-note">
               Documents are processed securely and never stored.<br />
-              Analysis completes within minutes.
+              Analysis may take 1 to 3 minutes. Please keep this tab open.
             </div>
           </div>
 
-          {error && (
-            <div className="error-box">
-              <p>{error}</p>
-            </div>
-          )}
+          {error && <div className="error-box"><p>{error}</p></div>}
 
           {loading && (
             <div className="loading-overlay">
               <div className="loading-title">Analysing your paper</div>
-              <div className="loading-track">
-                <div className="loading-fill" />
-              </div>
+              <div className="loading-track"><div className="loading-fill" /></div>
               <div className="loading-msg">{loadingMsg}</div>
             </div>
           )}
@@ -303,7 +352,6 @@ export default function Home() {
                 <h3>Re-evaluation Report</h3>
                 <p>Analysis complete — review each flagged question below</p>
               </div>
-
               <div className="verdict-grid">
                 <div className="verdict-card accent">
                   <div className="v-num">{result.totalQuestions}</div>
@@ -369,7 +417,6 @@ export default function Home() {
               </div>
             </div>
           )}
-
         </div>
       </main>
 
