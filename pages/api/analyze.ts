@@ -4,9 +4,12 @@ import fs from 'fs'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const config = {
-  api: { bodyParser: false },
+  api: {
+    bodyParser: false,
+    responseLimit: false,
+    sizeLimit: '50mb',
+  },
 }
-
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 function parseForm(req: NextApiRequest): Promise<{ fields: formidable.Fields; files: formidable.Files }> {
